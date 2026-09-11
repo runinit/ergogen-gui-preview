@@ -1,3 +1,5 @@
+import type { PwaState } from '../App';
+import { removeSelection, isDeleteShortcut } from '../utils/studioDelete';
 import { ResizeReview, type ResizeProposal } from '../utils/resizeReview';
 import { repairSetup } from '../utils/setupRepair';
 import { keySetup } from '../utils/keyOptions';
@@ -22,23 +24,33 @@ import {
   X,
 } from 'lucide-react';
 import { useConfigContext } from '../context/ConfigContext';
-import { useCaseAnalysis, useLayoutAnalysis } from '../hooks/useCasePreview';
+import {
+  useCasePreview,
+  useCaseAnalysis,
+  useLayoutAnalysis,
+} from '../hooks/useCasePreview';
 import {
   getValue,
   readStudio,
   addCluster,
-  moveColumn,
   addObject,
   addOutline,
   nextId,
   setValue,
   StudioDoc,
 } from '../utils/studioSource';
-import { moveLayout } from '../utils/layoutSource';
+import { moveTargets } from '../utils/studioMove';
+import {
+  selectTargets,
+  selectionMode,
+  includesObject,
+  type SelectionMode,
+  type StudioTarget,
+} from '../utils/studioTargets';
 import StudioExport from './StudioExport';
+import StudioSettings from './StudioSettings';
 import ConfigEditor from './ConfigEditor';
 import UpdateChip from '../atoms/UpdateChip';
-import InstallChip from '../atoms/InstallChip';
 import CaseWizard from './CaseWizard';
 import FilePreview from './FilePreview';
 import StudioCanvas, { StudioSelection } from './StudioCanvas';
@@ -69,19 +81,19 @@ import { theme } from '../theme/theme';
 const FootprintLibrary = lazy(() => import('./FootprintLibrary'));
 const DesignView = lazy(() => import('./DesignView'));
 const stages = [
-  ['layout', 'Layout', LayoutGrid],
-  ['components', 'Components', Component],
+  ['design', 'Design', LayoutGrid],
   ['pcb', 'PCB', Cpu],
   ['case', 'Case', Box],
   ['export', 'Export', Download],
 ] as const;
 type Stage = (typeof stages)[number][0];
 const EMPTY: StudioDoc = { schema: 'ergogen/v1', layout: {} };
+const EMPTY_ASSETS = {};
 
 export default function BoardStudio({
   onUpdate,
-  onInstall,
-}: { onUpdate?: () => void; onInstall?: () => void } = {}) {
+  pwaState,
+}: { onUpdate?: () => void; pwaState?: PwaState } = {}) {
   const context = useConfigContext();
   const source = context?.configInput || '';
   const parsed = useMemo(() => {
@@ -92,7 +104,7 @@ export default function BoardStudio({
     }
   }, [source]);
   const data = parsed.data;
-  const [stage, setStage] = useState<Stage>('layout');
+  const [stage, setStage] = useState<Stage>('design');
   const [selection, setSelection] = useState<StudioSelection>({
     section: Object.keys(data.layout.clusters || {}).length
       ? 'clusters'
@@ -103,12 +115,13 @@ export default function BoardStudio({
       '',
   });
   const [sheet, setSheet] = useState<'tree' | 'inspector' | ''>('');
-  const [code, setCode] = useState(false);
-  const [library, setLibrary] = useState(false);
-  const [sketch, setSketch] = useState(false);
+  const [view, setView] = useState<'canvas' | 'code' | 'library' | 'sketch'>(
+    'canvas'
+  );
+  const codeReturn = useRef<'canvas' | 'library' | 'sketch'>('canvas');
   const [side, setSide] = useState<'top' | 'side'>('top');
   const [pcbView, setPcbView] = useState<'outline' | 'pcb'>('outline');
-  const assets = context?.projectAssets || {};
+  const assets = context?.projectAssets || EMPTY_ASSETS;
   const [error, setError] = useState('');
   const [adding, setAdding] = useState(false);
   const [newKind, setNewKind] = useState('columns');
@@ -138,6 +151,7 @@ export default function BoardStudio({
     }
   }, [source, parsed.error, editSource]);
   const [quickRequest, setQuickRequest] = useState(0);
+  const [quickIntent, setQuickIntent] = useState<'select' | 'focus'>('select');
   const treeTrigger = useRef<HTMLButtonElement>(null),
     inspectorTrigger = useRef<HTMLButtonElement>(null);
   const treePane = useRef<HTMLElement>(null),
@@ -158,12 +172,21 @@ export default function BoardStudio({
     cad?.(true);
     return () => cad?.(false);
   }, [cad]);
-  const analysis = useCaseAnalysis(
-    source,
-    context?.injectionInput,
-    assets,
-    stage !== 'case'
-  );
+  const analysis = useCaseAnalysis(source, context?.injectionInput, assets);
+  const preview = useCasePreview(source, context?.injectionInput, assets);
+  const published = useRef(preview.result);
+  const adoptGenerated = context?.adoptGenerated;
+  useEffect(() => {
+    if (
+      !preview.result ||
+      preview.stale ||
+      published.current === preview.result
+    ) {
+      return;
+    }
+    published.current = preview.result;
+    adoptGenerated?.(source, preview.result, assets);
+  }, [preview.result, preview.stale, source, assets, adoptGenerated]);
   const layout = useLayoutAnalysis(
     source,
     context?.injectionInput,
@@ -183,62 +206,60 @@ export default function BoardStudio({
       const next = transform(before);
       finish(next);
       setError('');
+      return true;
     } catch (caught) {
       if (caught instanceof ResizeReview) {
         setResizeReview({ proposal: caught.proposal, finish });
-        return;
+        return false;
       }
       setError(String(caught));
+      return false;
     }
+  };
+  const deleteSelected = () => {
+    if (stale || !selection.id) {
+      return;
+    }
+    edit(
+      (before) => removeSelection(before, selection),
+      (next) => {
+        context?.editSource(next);
+        setSelection({ section: 'objects', id: '' });
+      }
+    );
   };
   const choose = (
     value: StudioSelection,
-    panel: 'inspect' | 'keep' = 'inspect'
+    panel: 'inspect' | 'keep' = 'inspect',
+    mode: SelectionMode = 'replace',
+    order: StudioTarget[] = []
   ) => {
-    setSelection(value);
+    setSelection((current) => selectTargets(current, value, mode, order));
     setReview(false);
     if (panel === 'inspect') {
       setSheet('inspector');
     }
   };
-  const move = (target: StudioSelection, delta: number[], before: string) => {
+  const move = (
+    target: StudioSelection,
+    delta: number[],
+    before: string,
+    candidate?: string
+  ) => {
     if (before !== context?.getRealtimeConfigInput()) {
       setError('The source changed during this move. Retry.');
-      return;
+      return false;
     }
-    if (target.section === 'columns') {
-      const cluster = target.cluster || '',
-        frame = report?.clusters[cluster];
-      if (!frame || frame.locked || stale) {
-        return;
-      }
-      edit((current) =>
-        moveColumn(current, cluster, target.id, delta, frame.matrix)
-      );
-      return;
+    if (!report || stale) {
+      return false;
     }
-    if (target.section !== 'objects' && target.section !== 'clusters') {
-      return;
-    }
-    const frame = report?.[target.section]?.[target.id];
-    if (!frame || frame.locked || stale) {
-      return;
-    }
-    edit((current) =>
-      moveLayout(
-        current,
-        target.section as 'objects' | 'clusters',
-        target.id,
-        delta,
-        frame.editMatrix
-      )
+    return edit(
+      (current) => candidate || moveTargets(current, target, delta, report)
     );
   };
   const changeStage = (next: Stage) => {
     setStage(next);
-    setLibrary(false);
-    setSketch(false);
-    setCode(false);
+    setView('canvas');
     setSheet('');
     setReview(false);
     if (next === 'pcb') {
@@ -402,7 +423,7 @@ export default function BoardStudio({
         section: chunks[1] as StudioSelection['section'],
         id: chunks[2],
       });
-      setStage('layout');
+      setStage('design');
     } else if (chunks[0] === 'units') {
       setSelection({ section: 'parameters', id: '' });
     } else {
@@ -423,9 +444,20 @@ export default function BoardStudio({
     <StudioShell
       aria-label="Board Studio"
       onKeyDown={(event) => {
+        if (
+          stage === 'design' &&
+          view === 'canvas' &&
+          isDeleteShortcut(event.key, event.target) &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          deleteSelected();
+        }
         if (event.key === 'Escape') {
           setAdding(false);
-          setLibrary(false);
+          setView(view === 'code' ? codeReturn.current : 'canvas');
           setReview(false);
           closeSheet();
         }
@@ -508,6 +540,16 @@ export default function BoardStudio({
           }}
         />
       )}
+      {context.showSettings && (
+        <StudioSettings
+          pwaState={pwaState}
+          onClose={() => context.setShowSettings(false)}
+          onLibrary={() => {
+            context.setShowSettings(false);
+            setView('library');
+          }}
+        />
+      )}
       <StudioHeader>
         <button
           aria-label="Projects"
@@ -523,7 +565,6 @@ export default function BoardStudio({
           {context.error ? 'Needs attention' : 'Autosaved'}
         </small>
         {onUpdate && <UpdateChip onClick={onUpdate} />}
-        {onInstall && <InstallChip onClick={onInstall} />}
         <div className="project-actions">
           <button
             aria-label="Undo project edit"
@@ -541,10 +582,14 @@ export default function BoardStudio({
           </button>
           <button
             aria-label="Code"
-            aria-pressed={code}
+            aria-pressed={view === 'code'}
             onClick={() => {
-              setCode(!code);
-              setLibrary(false);
+              if (view === 'code') {
+                setView(codeReturn.current);
+                return;
+              }
+              codeReturn.current = view;
+              setView('code');
             }}
           >
             <Code2 size={18} />
@@ -584,16 +629,27 @@ export default function BoardStudio({
           <button
             data-primary="true"
             aria-label="Generate project"
-            disabled={!!parsed.error || context.isGenerating || stale}
-            onClick={() =>
-              context.generateNow(source, context.injectionInput, {
-                pointsonly: false,
-              })
+            disabled={
+              !!parsed.error ||
+              preview.pending ||
+              analysis.pending ||
+              analysis.stale ||
+              !!analysis.error
             }
+            onClick={preview.generate}
           >
             <Box size={18} />
-            <span className="desktop">Generate 3D</span>
+            <span className="desktop">
+              {preview.pending
+                ? 'Generating…'
+                : preview.error
+                  ? 'Retry generation'
+                  : 'Generate 3D'}
+            </span>
           </button>
+          {preview.pending && (
+            <button onClick={preview.cancel}>Cancel generation</button>
+          )}
         </div>
         <button
           aria-label="Settings"
@@ -614,6 +670,15 @@ export default function BoardStudio({
           </button>
         ))}
       </StageNav>
+      {preview.error && (
+        <StudioStatus role="alert">{preview.error}</StudioStatus>
+      )}
+      {analysis.error && (
+        <StudioStatus role="alert">
+          {analysis.error}
+          <button onClick={analysis.generate}>Retry board analysis</button>
+        </StudioStatus>
+      )}
       {context.error && (
         <StudioStatus role="alert">{context.error}</StudioStatus>
       )}
@@ -623,22 +688,26 @@ export default function BoardStudio({
           <button
             onClick={() => {
               setError('');
-              setCode(true);
+              setView('code');
             }}
           >
             Open Code
           </button>
         </StudioStatus>
       )}
-      {code ? (
+      {view === 'code' ? (
         <StudioMain style={{ flex: 1 }}>
-          <ConfigEditor aria-label="Project YAML" className="studio-code" />
+          <ConfigEditor
+            aria-label="Project YAML"
+            className="studio-code"
+            onGenerate={preview.generate}
+          />
         </StudioMain>
-      ) : library ? (
+      ) : view === 'library' ? (
         <Suspense fallback={<p>Opening part library…</p>}>
           <StudioBar>
             <h2>Part library</h2>
-            <button onClick={() => setLibrary(false)}>Back to design</button>
+            <button onClick={() => setView('canvas')}>Back to design</button>
           </StudioBar>
           <FootprintLibrary
             source={source}
@@ -649,7 +718,12 @@ export default function BoardStudio({
       ) : stage === 'case' && !parsed.error ? (
         <CaseWizard
           presentation="embedded"
-          onClose={() => changeStage('layout')}
+          session={{
+            preview,
+            analysis,
+            onExport: () => changeStage('export'),
+          }}
+          onClose={() => changeStage('design')}
         />
       ) : stage === 'export' ? (
         <StudioExport
@@ -659,15 +733,26 @@ export default function BoardStudio({
           result={analysis.result}
           stale={boardStale}
           blockers={blockers}
-          review={() => changeStage('case')}
+          preview={preview}
+          analysis={analysis}
+          review={() => {
+            const assemblies = Object.values(data.designs?.assemblies || {});
+            if (
+              !assemblies.length ||
+              assemblies.some(
+                (spec) => (spec as { preset?: string })?.preset === 'enclosure'
+              )
+            ) {
+              changeStage('case');
+              return;
+            }
+            changeStage('design');
+            setView('sketch');
+          }}
         />
       ) : (
         <>
-          <StudioBar
-            className={
-              stage === 'layout' ? 'studio-mobile-tools' : 'studio-stage-tools'
-            }
-          >
+          <StudioBar className={'studio-stage-tools'}>
             <button
               className="mobile-only"
               ref={treeTrigger}
@@ -684,8 +769,8 @@ export default function BoardStudio({
               <SlidersHorizontal size={18} />
               Inspector
             </button>
-            {stage === 'components' && (
-              <button onClick={() => setLibrary(true)}>Part library</button>
+            {stage === 'design' && (
+              <button onClick={() => setView('library')}>Part library</button>
             )}
             {stage === 'pcb' && (
               <>
@@ -719,9 +804,7 @@ export default function BoardStudio({
                 <button
                   onClick={() => {
                     setAdding(!adding);
-                    setNewKind(
-                      stage === 'components' ? 'component' : 'columns'
-                    );
+                    setNewKind('columns');
                   }}
                 >
                   <Plus size={16} />
@@ -810,19 +893,32 @@ export default function BoardStudio({
                 data={data}
                 report={report}
                 selection={selection}
-                choose={choose}
+                choose={(value, mode, order) => {
+                  choose(value, 'keep', mode, order);
+                  setQuickIntent('select');
+                  setQuickRequest((current) => current + 1);
+                }}
               />
-              <details open={stage === 'components'}>
+              <details>
                 <summary>Components and free objects</summary>
                 {Object.entries(data.layout.objects || {})
                   .filter(([, item]) => !item.cluster)
                   .map(([id, item]) => (
                     <TreeButton
                       key={id}
-                      aria-pressed={
-                        selection.section === 'objects' && selection.id === id
-                      }
-                      onClick={() => choose({ section: 'objects', id })}
+                      aria-pressed={includesObject(selection, { id })}
+                      onClick={(event) => {
+                        choose(
+                          { section: 'objects', id },
+                          'keep',
+                          selectionMode(event),
+                          Object.entries(data.layout.objects || {})
+                            .filter(([, item]) => !item.cluster)
+                            .map(([id]) => ({ section: 'objects', id }))
+                        );
+                        setQuickIntent('select');
+                        setQuickRequest((current) => current + 1);
+                      }}
                     >
                       <Component size={18} />
                       <span>
@@ -832,99 +928,95 @@ export default function BoardStudio({
                     </TreeButton>
                   ))}
               </details>
-              <h3>Design</h3>
-              <TreeButton
-                aria-pressed={selection.section === 'parameters'}
-                onClick={() => choose({ section: 'parameters', id: '' })}
-              >
-                <Variable size={18} />
-                Parameters
-              </TreeButton>
-              <TreeButton
-                aria-pressed={selection.section === 'constraints'}
-                onClick={() =>
-                  choose({
-                    section: 'constraints',
-                    id: Object.keys(data.layout.constraints || {})[0] || '',
-                  })
-                }
-              >
-                <GitBranch size={18} />
-                Constraints
-              </TreeButton>
-              {Object.entries(data.layout.constraints || {}).map(
-                ([id, item]) => (
-                  <TreeButton
-                    key={id}
-                    aria-pressed={
-                      selection.section === 'constraints' && selection.id === id
-                    }
-                    onClick={() => choose({ section: 'constraints', id })}
-                  >
-                    {item.label || id}
-                  </TreeButton>
-                )
-              )}
               <details>
-                <summary>Mounting layers</summary>
-                {Object.keys(data.layout.layers || {}).map((id) => (
+                <summary>Design</summary>
+                <TreeButton
+                  aria-pressed={selection.section === 'parameters'}
+                  onClick={() => choose({ section: 'parameters', id: '' })}
+                >
+                  <Variable size={18} />
+                  Parameters
+                </TreeButton>
+                <TreeButton
+                  aria-pressed={selection.section === 'constraints'}
+                  onClick={() =>
+                    choose({
+                      section: 'constraints',
+                      id: Object.keys(data.layout.constraints || {})[0] || '',
+                    })
+                  }
+                >
+                  <GitBranch size={18} />
+                  Constraints
+                </TreeButton>
+                {Object.entries(data.layout.constraints || {}).map(
+                  ([id, item]) => (
+                    <TreeButton
+                      key={id}
+                      aria-pressed={
+                        selection.section === 'constraints' &&
+                        selection.id === id
+                      }
+                      onClick={() => choose({ section: 'constraints', id })}
+                    >
+                      {item.label || id}
+                    </TreeButton>
+                  )
+                )}
+                <details>
+                  <summary>Mounting layers</summary>
+                  {Object.keys(data.layout.layers || {}).map((id) => (
+                    <TreeButton
+                      key={id}
+                      aria-pressed={
+                        selection.section === 'layers' && selection.id === id
+                      }
+                      onClick={() => choose({ section: 'layers', id })}
+                    >
+                      {id}
+                      <small>Layer</small>
+                    </TreeButton>
+                  ))}
+                </details>
+                {Object.keys(data.designs?.profiles || {}).map((id) => (
                   <TreeButton
                     key={id}
                     aria-pressed={
-                      selection.section === 'layers' && selection.id === id
+                      selection.section === 'outline' && selection.id === id
                     }
-                    onClick={() => choose({ section: 'layers', id })}
+                    onClick={() => choose({ section: 'outline', id })}
                   >
                     {id}
-                    <small>Layer</small>
+                    <small>Outline</small>
                   </TreeButton>
                 ))}
-              </details>
-              {Object.keys(data.designs?.profiles || {}).map((id) => (
-                <TreeButton
-                  key={id}
-                  aria-pressed={
-                    selection.section === 'outline' && selection.id === id
-                  }
-                  onClick={() => choose({ section: 'outline', id })}
-                >
-                  {id}
-                  <small>Outline</small>
-                </TreeButton>
-              ))}
-              <button
-                onClick={() =>
-                  edit((before) =>
-                    addOutline(
-                      before,
-                      Object.keys(data.pcbs || {})[0] || 'main',
-                      report,
-                      'replace'
-                    )
-                  )
-                }
-              >
-                Rebuild board outline
-              </button>
-              <StudioActions>
                 <button
-                  onClick={() => {
-                    setSketch(!sketch);
-                    setSheet('');
-                  }}
+                  onClick={() =>
+                    edit((before) =>
+                      addOutline(
+                        before,
+                        Object.keys(data.pcbs || {})[0] || 'main',
+                        report,
+                        'replace'
+                      )
+                    )
+                  }
                 >
-                  Sketches
+                  Rebuild board outline
                 </button>
-                <button onClick={() => setLibrary(true)}>Part library</button>
-              </StudioActions>
+                <StudioActions>
+                  <button
+                    onClick={() => {
+                      setView(view === 'sketch' ? 'canvas' : 'sketch');
+                      setSheet('');
+                    }}
+                  >
+                    Sketches
+                  </button>
+                </StudioActions>
+              </details>
             </StudioPane>
             <StudioMain>
-              {!stale && analysis.error && (
-                <StudioStatus role="status">
-                  Layout is editable. Board outline needs attention:{' '}
-                  {analysis.error}
-                </StudioStatus>
-              )}
               {stale && (
                 <StudioStatus role="status">
                   {layout.pending
@@ -935,9 +1027,9 @@ export default function BoardStudio({
                   )}
                 </StudioStatus>
               )}
-              {sketch ? (
+              {view === 'sketch' ? (
                 <Suspense fallback={<p>Opening sketches…</p>}>
-                  <DesignView />
+                  <DesignView session={{ analysis, preview }} />
                 </Suspense>
               ) : stage === 'pcb' && pcbView === 'pcb' ? (
                 pcb ? (
@@ -951,25 +1043,30 @@ export default function BoardStudio({
                 )
               ) : (
                 <>
-                  <SelectionPopover
-                    source={source}
-                    selection={selection}
-                    report={report}
-                    edit={edit}
-                    request={quickRequest}
-                  />
                   <StudioCanvas
+                    quickEdit={
+                      <SelectionPopover
+                        source={source}
+                        selection={selection}
+                        report={report}
+                        edit={edit}
+                        request={quickRequest}
+                        intent={quickIntent}
+                      />
+                    }
                     report={report}
                     injections={context.injectionInput}
                     source={source}
                     stale={stale}
                     selection={selection}
                     onSelect={choose}
-                    onQuickEdit={(value) => {
+                    onQuickEdit={(value, intent = 'select') => {
                       choose(value, 'keep');
+                      setQuickIntent(intent);
                       setQuickRequest((current) => current + 1);
                     }}
                     onMove={move}
+                    onDelete={deleteSelected}
                     model={model}
                     side={side}
                     onSide={setSide}
@@ -1025,29 +1122,37 @@ export default function BoardStudio({
           <button onClick={() => setReview(false)}>Close findings</button>
         </StudioStatus>
       )}
-      <StudioStatus role="status">
-        <small>
-          {stale
-            ? 'Layout needs analysis'
-            : solver
-              ? `Layout ${solver.status === 'solved' ? 'solved' : `solved · ${solver.dof} free movements`}`
-              : 'Layout resolved'}{' '}
-          ·{' '}
-          {
-            Object.values(report?.objects || {}).filter(
-              (item) => item.kind === 'key'
-            ).length
-          }{' '}
-          keys
-        </small>
-        <button onClick={() => setReview(!review)}>
-          {blockers
-            ? `${blockers} blockers`
-            : analysis.error
-              ? 'Analysis needs attention'
-              : `${uniqueFindings.length} checks`}
-        </button>
-      </StudioStatus>
+      {!(stage === 'case' && view === 'canvas' && !parsed.error) && (
+        <StudioStatus role="status">
+          <small>
+            {stage !== 'design'
+              ? preview.pending
+                ? 'Generating geometry…'
+                : preview.stale
+                  ? '3D needs generation'
+                  : 'Current 3D geometry'
+              : stale
+                ? 'Layout needs analysis'
+                : solver
+                  ? `Layout ${solver.status === 'solved' ? 'solved' : `solved · ${solver.dof} free movements`}`
+                  : 'Layout resolved'}{' '}
+            ·{' '}
+            {
+              Object.values(report?.objects || {}).filter(
+                (item) => item.kind === 'key'
+              ).length
+            }{' '}
+            keys
+          </small>
+          <button onClick={() => setReview(!review)}>
+            {blockers
+              ? `${blockers} blockers`
+              : analysis.error
+                ? 'Analysis needs attention'
+                : `${uniqueFindings.length} checks`}
+          </button>
+        </StudioStatus>
+      )}
     </StudioShell>
   );
 }

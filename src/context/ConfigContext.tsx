@@ -192,6 +192,8 @@ type ContextProps = {
   clearError: () => void;
   deprecationWarning: string | null;
   clearWarning: () => void;
+  skippedWarning: string | null;
+  clearSkippedWarning: () => void;
   info: string | null;
   setInfo: Dispatch<SetStateAction<string | null>>;
   clearInfo: () => void;
@@ -659,6 +661,7 @@ const ConfigContextProvider = ({
   const [deprecationWarning, setDeprecationWarning] = useState<string | null>(
     null
   );
+  const [skippedWarning, setSkippedWarning] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const activeRequestRef = useRef<string | null>(null);
   const [resultsStale, setResultsStale] = useState(false);
@@ -885,6 +888,7 @@ const ConfigContextProvider = ({
 
   const clearError = useCallback(() => setError(null), []);
   const clearWarning = useCallback(() => setDeprecationWarning(null), []);
+  const clearSkippedWarning = useCallback(() => setSkippedWarning(null), []);
   const clearInfo = useCallback(() => setInfo(null), []);
 
   /**
@@ -1246,6 +1250,11 @@ const ConfigContextProvider = ({
       if (!targetInput) {
         return;
       }
+      const [, parsedConfig] = parseConfig(targetInput);
+      // Native projects own analysis and explicit builds in Board Studio.
+      if (parsedConfig?.schema === 'ergogen/v1') {
+        return;
+      }
       if (
         adoptedResult.current?.source === targetInput &&
         adoptedResult.current.injections ===
@@ -1255,10 +1264,10 @@ const ConfigContextProvider = ({
       }
       adoptedResult.current = null;
       const inputInjection = filterInjectionsByFeatureFlags(injectionInput);
-      const [, parsedConfig] = parseConfig(targetInput);
 
       setError(null);
       setDeprecationWarning(null);
+      setSkippedWarning(null);
       setIsGenerating(true);
       generationStartTimeRef.current = performance.now();
       currentConfigVersion.current += 1;
@@ -1266,19 +1275,17 @@ const ConfigContextProvider = ({
       activeRequestRef.current = `ergogen-generate-${currentConfigVersion.current}-${Date.now()}`;
 
       const warning = checkForDeprecationWarnings(parsedConfig);
-      const skippedWarning = getSkippedInjectionsWarning(injectionInput);
-      const combinedWarning = [warning, skippedWarning]
-        .filter(Boolean)
-        .join('\n');
-      if (combinedWarning) {
-        setDeprecationWarning(combinedWarning);
+      if (warning) {
+        setDeprecationWarning(warning);
+      }
+
+      const skippedWarningMsg = getSkippedInjectionsWarning(injectionInput);
+      if (skippedWarningMsg) {
+        setSkippedWarning(skippedWarningMsg);
       }
 
       const inputConfig =
-        (parsedConfig as { schema?: string })?.schema === 'ergogen/v1'
-          ? targetInput
-          : preparePreviewConfig(parsedConfig, options.pointsonly) ||
-            targetInput;
+        preparePreviewConfig(parsedConfig, options.pointsonly) || targetInput;
 
       const requestId = activeRequestRef.current;
       const assetsAtRequest = {
@@ -1330,7 +1337,14 @@ const ConfigContextProvider = ({
         return;
       }
     },
-    [parseConfig, setError, setDeprecationWarning, setIsGenerating, debug]
+    [
+      parseConfig,
+      setError,
+      setDeprecationWarning,
+      setSkippedWarning,
+      setIsGenerating,
+      debug,
+    ]
   );
 
   /**
@@ -1916,7 +1930,7 @@ const ConfigContextProvider = ({
    * Effect to handle transition of showSettings from true to false (settings closed).
    */
   useEffect(() => {
-    if (prevShowSettingsRef.current && !showSettings) {
+    if (prevShowSettingsRef.current && !showSettings && !cadActive) {
       console.log(
         'Settings panel closed. Restarting Ergogen worker to clear stale custom libraries...'
       );
@@ -1944,21 +1958,19 @@ const ConfigContextProvider = ({
 
       if (configInputState) {
         generateNow(configInputState, injectionInput, {
-          pointsonly:
-            parseConfig(configInputState)[1]?.schema === 'ergogen/v1' ||
-            !autoGen3D,
+          pointsonly: !autoGen3D,
         });
       }
     }
     prevShowSettingsRef.current = showSettings;
   }, [
     showSettings,
+    cadActive,
     configInputState,
     injectionInput,
     autoGen3D,
     generateNow,
     handleErgogenWorkerMessage,
-    parseConfig,
   ]);
 
   /**
@@ -1971,9 +1983,7 @@ const ConfigContextProvider = ({
     );
     if (autoGen && !showSettings && !cadActive) {
       processInput(configInputState, injectionInput, {
-        pointsonly:
-          parseConfig(configInputState || '')[1]?.schema === 'ergogen/v1' ||
-          !autoGen3D,
+        pointsonly: !autoGen3D,
       });
     }
   }, [
@@ -1984,7 +1994,6 @@ const ConfigContextProvider = ({
     cadActive,
     showSettings,
     processInput,
-    parseConfig,
   ]);
 
   // Trigger background preview generation on mount if loadedVersion is 1 or hadLegacyConfig is true
@@ -2005,7 +2014,10 @@ const ConfigContextProvider = ({
 
       // Loop through all configurations that don't have a previewSvg and generate them
       configsRef.current.forEach((cfg) => {
-        if (!cfg.previewSvg) {
+        if (
+          !cfg.previewSvg &&
+          parseConfig(cfg.config)[1]?.schema !== 'ergogen/v1'
+        ) {
           console.log(
             `Triggering background preview generation for: ${cfg.name}`
           );
@@ -2021,7 +2033,7 @@ const ConfigContextProvider = ({
         }
       });
     }
-  }, [workerReady, loadedVersion, hadLegacyConfig]);
+  }, [workerReady, loadedVersion, hadLegacyConfig, parseConfig]);
 
   const canUndo = history.current.canUndo,
     canRedo = history.current.canRedo;
@@ -2063,6 +2075,8 @@ const ConfigContextProvider = ({
       clearError,
       deprecationWarning,
       clearWarning,
+      skippedWarning,
+      clearSkippedWarning,
       info,
       setInfo,
       clearInfo,
@@ -2136,6 +2150,8 @@ const ConfigContextProvider = ({
       clearError,
       deprecationWarning,
       clearWarning,
+      skippedWarning,
+      clearSkippedWarning,
       info,
       setInfo,
       clearInfo,

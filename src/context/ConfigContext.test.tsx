@@ -157,6 +157,47 @@ describe('ConfigContextProvider', () => {
     localStorage.clear();
   });
 
+  it('leaves native generation to the workspace on load, import and settings close', async () => {
+    const source = 'schema: ergogen/v1\nlayout: {}';
+    mockInitialConfig(source);
+    let session: ReturnType<typeof useConfigContext>;
+    const Capture = () => {
+      session = useConfigContext();
+      return null;
+    };
+    render(
+      <ConfigContextProvider>
+        <Capture />
+      </ConfigContextProvider>
+    );
+    await act(async () => {});
+    expect(mockErgogenWorker.postMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      session!.setCadActive(true);
+      await session!.generateNow(source, []);
+      session!.setShowSettings(true);
+    });
+    mockErgogenWorker.terminate.mockClear();
+    act(() => session!.setShowSettings(false));
+    expect(mockErgogenWorker.postMessage).not.toHaveBeenCalled();
+    expect(mockErgogenWorker.terminate).not.toHaveBeenCalled();
+  });
+
+  it('does not generate solids for native thumbnails during storage migration', async () => {
+    localStorage.setItem(
+      'ergogen:config',
+      JSON.stringify('schema: ergogen/v1\nlayout: {}')
+    );
+    render(
+      <ConfigContextProvider>
+        <TestComponent />
+      </ConfigContextProvider>
+    );
+    await act(async () => {});
+    expect(mockErgogenWorker.postMessage).not.toHaveBeenCalled();
+  });
+
   it('should fetch config from github url parameter and update the config', async () => {
     const fetchSpy = vi.spyOn(window, 'fetch').mockImplementation((url) => {
       if (
@@ -261,6 +302,7 @@ describe('ConfigContextProvider', () => {
               {
                 type: 'file',
                 name: 'test_footprint.js',
+                path: 'footprints/test_footprint.js',
                 download_url:
                   'https://raw.githubusercontent.com/ceoloide/test-repo/main/footprints/test_footprint.js',
               },
@@ -1142,11 +1184,9 @@ describe('ConfigContextProvider', () => {
       ];
 
       await act(async () => {
-        await capturedContext.generateNow(
-          'schema: ergogen/v1\nlayout: {}',
-          testInjections,
-          { pointsonly: false }
-        );
+        await capturedContext.generateNow('points: {}', testInjections, {
+          pointsonly: false,
+        });
       });
 
       // It should trigger postMessage, but only with footprint injection

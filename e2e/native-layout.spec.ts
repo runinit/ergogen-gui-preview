@@ -76,6 +76,9 @@ test('edits local key overrides, preserves arrangements, and enforces locks', as
   await load(page, Columns.value);
   await openLayout(page);
   await page
+    .getByRole('button', { name: 'Select Objects', exact: true })
+    .click();
+  await page
     .getByRole('button', { name: 'Select outer_home', exact: true })
     .click();
   await page.getByLabel('X', { exact: true }).fill('5');
@@ -122,7 +125,11 @@ test('edits local key overrides, preserves arrangements, and enforces locks', as
   await expect(
     page.getByRole('status').filter({ hasText: /Layout resolved/ })
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Move', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Select Objects', exact: true })
+    .click();
+  // This test exercises free placement, independent of spacing constraints.
+  await page.keyboard.down('Alt');
   const box = (await key.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -132,6 +139,7 @@ test('edits local key overrides, preserves arrangements, and enforces locks', as
     { steps: 4 }
   );
   await page.mouse.up();
+  await page.keyboard.up('Alt');
   await expect.poll(() => source(page)).not.toBe(beforeMove);
   const movedX = parse(await source(page)).layout.objects.outer_home.placement
     .override.at[0];
@@ -158,7 +166,7 @@ test('shows independent floor and PCB layers in side view and generates their as
   await expect(page.getByText('= 2.5 mm', { exact: true })).toBeVisible();
   await page
     .getByRole('button', { name: 'Select screen', exact: true })
-    .click();
+    .press('Enter');
   await expect(page.getByLabel('Mounting layer', { exact: true })).toHaveValue(
     'switches'
   );
@@ -169,11 +177,13 @@ test('shows independent floor and PCB layers in side view and generates their as
   await openCase(page);
   const dialog = page.getByRole('region', { name: 'Case designer' });
   await expect(
-    dialog.getByRole('button', { name: 'Generate', exact: true })
+    page.getByRole('button', { name: 'Generate project', exact: true })
   ).toBeEnabled({ timeout: TIMEOUT });
-  await dialog.getByRole('button', { name: 'Generate', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Generate project', exact: true })
+    .click();
   await expect(
-    dialog.getByText('Generated current draft', { exact: true })
+    dialog.getByRole('status').filter({ hasText: /Current geometry/ })
   ).toBeVisible({ timeout: TIMEOUT });
   await dialog.getByRole('button', { name: 'assembled', exact: true }).click();
   await expect(dialog.getByLabel('3D assembly preview')).toHaveAttribute(

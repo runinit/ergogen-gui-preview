@@ -16,10 +16,25 @@ This document serves as a knowledge base and architectural guide for the project
 
 ## Board Studio and document session
 
-`BoardStudio` is the native workspace: Layout → Components → PCB → Case → Export.
+`BoardStudio` is the native workspace: Design → PCB → Case → Export.
 Its tree and inspector surround a shared physical-layout canvas. Phone panels
 replace the docked columns without removing editing controls. Legacy documents
 retain the existing workspace while native projects use Studio.
+
+Design combines layout and component placement, with one part-library entry.
+Settings opens a modal inside the workspace and restores focus when closed;
+selection, camera and the active stage remain mounted. Advanced library source
+appears only after selecting an entry. Schema routing parses YAML, retains the
+active editor during syntax errors and resets when switching projects.
+
+Board Studio owns native analysis and explicit generation across Case, Code,
+library, sketches and Export. Analysis updates sketch editing; full generation
+supplies assembly meshes and converts JSCAD tray parts before publishing success.
+The legacy context never generates native documents, including
+initial imports and migrated thumbnails. Visiting Case does not modify the source;
+**Create case** is an explicit undoable edit. Export groups portable source, PCB,
+outlines and case files. Manufacturing review belongs to the current generated
+result and resets after edits; case failures do not block valid PCB outputs.
 
 `ConfigContext` owns the source, realtime source reference, project assets,
 custom injections and bounded undo/redo history. Code typing coalesces for 750 ms;
@@ -38,7 +53,8 @@ referenced objects instead of leaving broken attachments.
 New projects start from numeric matrix dimensions (5 columns × 4 rows by default).
 Their keys mount on the PCB top surface; new thumb clusters and loose keys reuse
 that layer. Case-height changes therefore move the electronics with the PCB.
-Selection scope—Keys, Columns or Clusters—is separate from Select, Move and Pan.
+The floating canvas pill exposes Objects, Columns and Matrices directly, alongside
+Pan and snapping. Selecting a tree item also updates the canvas selection scope.
 `ColumnInspector` edits a whole column's splay, stagger and offsets, and exposes
 its occupied and empty cells. Resizing preserves deleted holes; Add key restores
 a chosen cell. The engine assigns shared column/row nets; individual overrides
@@ -46,12 +62,36 @@ remain available under Wiring. This interaction draws inspiration from the
 [Cosmos editor](https://ryanis.cool/cosmos/beta), using our existing theme,
 native YAML and physical geometry.
 
-`StudioCanvas` renders resolved engine envelopes. A move has an ephemeral source
-candidate, resolved through the layout worker before it is committed to history.
-Cancelled pointers and failed solutions discard that candidate. Dimensions and
-arrangement formulas remain authored expressions; movement changes local overrides.
-Camera state is independent of source history. Fit, wheel zoom, pan and pinch
-operate on the drawing; drag feedback is an absolute overlay that never resizes the canvas.
+`StudioCanvas` renders resolved engine envelopes. Pointer motion translates SVG
+objects immediately; only a released drag creates a YAML candidate and invokes the
+layout worker. The accepted pose stays visible until normal analysis catches up.
+The camera freezes at drag start; Fit alone reframes the changed geometry. Cancelled
+pointers, changed source and rejected solutions leave source history unchanged.
+A solved constraint that prevents the requested motion produces a visible error.
+
+`studioTargets` owns Ctrl/Cmd toggling, Shift ranges and containment-aware selection.
+`studioMove` applies world deltas through local edit frames. Selected descendants
+move once with their ancestor, including owned electronics and mirrored members.
+`studioDelete` assembles a single undoable edit, removes owned components, and
+preserves lock and external-reference checks. Delete in text fields or dialogs
+keeps its normal editing behavior.
+
+`snapSpacing` resolves pitch expressions through the native unit evaluator and
+caches scoped defaults. Keys retain their pitch-derived edge gaps, including
+oversized caps and unequal row/column pitch. Independent components use the gap
+chosen in Canvas options. Snapping compares actual rotated envelope edges and
+rejects candidates that crowd another object on the same PCB and mounting layer.
+Owned key electronics retain their intentionally overlapping assembly placements.
+Alt or the Snap toggle explicitly bypasses these placement rules. A same-layer
+component can keep its snapped target and relative offset; stacked, solved and
+key-owned placements keep their existing relationships.
+
+Quick controls open after selection or a completed move, dismiss before another
+drag, and use free canvas space when possible. The panel respects reduced motion;
+phones use a bottom sheet. Objects show relative translation and rotation, keys add
+size/alignment, columns add splay/stagger, and matrices add row/column spacing.
+The compact tree groups owned electronics beneath keys. Pan, pinch, wheel zoom,
+arrow nudges and explicit Fit remain available.
 
 `StudioInspector` edits parameters, arrangements, placement, solver freedoms,
 constraints, layers, physical envelopes and outline finishing. For a profile that
@@ -712,9 +752,10 @@ editors. Documents and values are cloned before exposure; aliases, source ranges
 and independent edits remain covered by regression tests. A different source
 replaces the snapshot, bounding retained configuration data.
 
-While Case is active, Board Studio suspends its layout and board workers; the
-case designer owns draft analysis. Returning to Layout resumes analysis. Explicit
-3D builds reuse a successfully completed worker when injections are unchanged,
+While Case is active, Board Studio suspends its lightweight layout worker and
+keeps board analysis and full generation at workspace level. Standalone legacy
+case drafts retain their own jobs. Explicit 3D builds reuse a successfully
+completed worker when injections are unchanged,
 retaining the initialized CAD runtime. Busy, failed or changed-injection workers
 are replaced. Source, asset and request revisions still reject stale results;
 each build regenerates solids without reducing mesh precision or validation.
@@ -853,3 +894,7 @@ Embedded case initialization renders the new case definition before adopting it
 into the project. Key position controls edit local placement overrides. Editing
 a source invalidates pending generation and releases the busy state; late worker
 responses cannot replace the current project.
+
+New and empty sessions open Board Studio with a saved native draft. The `/new`
+route creates a draft directly; `/import` contains file, repository and example
+loading, reached through Projects → Import. Existing projects retain their editor.
