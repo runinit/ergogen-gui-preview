@@ -1,5 +1,5 @@
 import styled from 'styled-components';
-import { theme } from '../theme/theme';
+import { theme, studioDockInset } from '../theme/theme';
 
 export const StudioShell = styled.section`
   flex: 1;
@@ -50,6 +50,15 @@ export const StudioShell = styled.section`
   textarea:focus-visible {
     outline: 2px solid ${theme.colors.accent};
     outline-offset: 2px;
+  }
+  [data-object]:focus {
+    outline: none;
+  }
+  [data-object]:focus-visible polygon {
+    stroke: ${theme.colors.accent};
+    stroke-width: 2px;
+    stroke-dasharray: 4px 2px;
+    vector-effect: non-scaling-stroke;
   }
   input,
   select,
@@ -164,12 +173,14 @@ export const StudioHeader = styled(StudioBar)`
     .project-actions {
       order: 1;
       width: 100%;
+      min-width: 0;
+      flex-wrap: wrap;
+      button {
+        padding: ${theme.spacing.sm};
+      }
     }
     .project-actions button[data-primary] {
       margin-left: auto;
-    }
-    .project-actions .desktop {
-      display: inline;
     }
   }
 `;
@@ -177,28 +188,40 @@ export const StudioBody = styled.div`
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: ${theme.studio.treeWidth} minmax(0, 1fr) ${theme.studio
-      .inspectorWidth};
+  grid-template-columns: minmax(0, 1fr);
   position: relative;
   overflow: hidden;
+`;
+export const StudioPane = styled.aside<{ $open: boolean }>`
+  display: ${(p) => (p.$open ? 'block' : 'none')};
+  position: absolute;
+  left: ${studioDockInset};
+  top: ${studioDockInset};
+  max-height: calc(100% - ${studioDockInset} - ${theme.spacing.md});
+  width: min(
+    ${theme.studio.inspectorWidth},
+    calc(100% - 2 * ${theme.spacing.md})
+  );
+  box-sizing: border-box;
+  overflow: auto;
+  padding: ${theme.spacing.md};
+  background: ${theme.colors.backgroundLight};
+  border: 1px solid ${theme.colors.border};
+  border-radius: ${theme.cad.fieldRadius};
+  z-index: ${theme.studio.popoverLayer};
   @media (max-width: ${theme.studio.breakpoint}) {
-    grid-template-columns: minmax(0, 1fr);
-    &[data-sheet] {
-      grid-template-rows: minmax(220px, 1fr) minmax(0, 1fr);
-    }
+    top: auto;
+    left: ${theme.spacing.md};
+    bottom: ${theme.spacing.md};
+    width: calc(100% - 2 * ${theme.spacing.md});
+    max-height: min(
+      ${theme.studio.popoverHeight},
+      calc(100% - 2 * ${theme.spacing.md})
+    );
   }
 `;
-export const StudioPane = styled.aside<{
-  $side: 'left' | 'right';
-  $open: boolean;
-}>`
-  min-height: 0; overflow: auto; padding: ${theme.spacing.md}; border-${(p) => (p.$side === 'left' ? 'right' : 'left')}: 1px solid ${theme.colors.border}; background: ${theme.colors.backgroundLight};
-  grid-column: ${(p) => (p.$side === 'left' ? 1 : 3)}; grid-row: 1;
-  .close-pane { display: none; }
-  @media(max-width: ${theme.studio.breakpoint}) { display: ${(p) => (p.$open ? 'block' : 'none')}; position: relative; grid-row: 2; border-top: 1px solid ${theme.colors.border}; z-index: ${theme.studio.panelLayer}; grid-column: 1; .close-pane { display: inline-flex; margin-bottom: ${theme.spacing.md}; } }
-`;
 export const StudioMain = styled.main`
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 1;
   min-width: 0;
   min-height: 0;

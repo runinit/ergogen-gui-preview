@@ -2,7 +2,12 @@ import { expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { compileSetup, defaultSetup } from './designSetup';
 import { applyAssembly } from './applyAssembly';
-import { resizeCluster, addCluster, setValue } from './studioSource';
+import {
+  resizeCluster,
+  addCluster,
+  addOutline,
+  setValue,
+} from './studioSource';
 import { ResizeReview } from './resizeReview';
 import { updateSetup } from './updateSetup';
 import * as ergogen from 'ergogen';
@@ -385,4 +390,48 @@ it('resolves the added arc cluster and its owned electronics', async () => {
   await expect(
     ergogen.process(source, { layoutOnly: true })
   ).resolves.toBeDefined();
+});
+it('reproduces resized 7x5 geometry and the automatic outline with a separate 2x2 matrix', async () => {
+  const { sizeSelection } = await import('./studioSelection');
+  const m = await import('makerjs');
+  let source = compileSetup({
+    ...defaultSetup(),
+    columns: 7,
+    rows: 5,
+    diode: false,
+  });
+  source = addCluster(source, 'thumbs', 'columns', { columns: 2, rows: 2 });
+  source = setValue(source, ['layout', 'clusters', 'thumbs', 'placement'], {
+    at: [95.25, -38.1, 0],
+  });
+  const { resolve } = await import('ergogen/src/native/layout');
+  source = addOutline(source, 'main', resolve(parse(source)), 'replace');
+  const placement = parse(source).layout.clusters.thumbs.placement;
+  for (const size of [
+    [27.525, 18],
+    [18, 18],
+    [27.525, 18],
+  ]) {
+    source = sizeSelection(
+      source,
+      { section: 'columns', cluster: 'fingers', id: 'c1' },
+      size
+    );
+  }
+  expect(parse(source).layout.clusters.thumbs.placement).toEqual(placement);
+  const result = await ergogen.process(source, { analysis: true });
+  const bounds = m.measure.modelExtents(
+    result.designs.features['profiles.main'].model
+  )!;
+  for (const item of Object.values(
+    result.layout.objects
+  ) as import('ergogen/src/native').ResolvedObject[]) {
+    if (item.cluster !== 'fingers' || item.kind !== 'key') {
+      continue;
+    }
+    expect(bounds.low[0]).toBeLessThanOrEqual(item.bounds.keycap[0][0]);
+    expect(bounds.high[0]).toBeGreaterThanOrEqual(item.bounds.keycap[1][0]);
+    expect(bounds.low[1]).toBeLessThanOrEqual(item.bounds.keycap[0][1]);
+    expect(bounds.high[1]).toBeGreaterThanOrEqual(item.bounds.keycap[1][1]);
+  }
 });

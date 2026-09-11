@@ -17,8 +17,9 @@ import ColumnInspector from './ColumnInspector';
 import SelectionControls from './SelectionControls';
 import LayoutDefaults from './LayoutDefaults';
 import { KEY_SIZES } from '../utils/keySizes';
-import { resizeKey } from '../utils/keyResize';
+import { sizeSelection } from '../utils/studioSelection';
 import { matrixNames } from '../utils/studioSource';
+import { targets } from '../utils/studioTargets';
 import { setLayout } from '../utils/layoutSource';
 import type { SourcePath } from '../utils/designSource';
 
@@ -42,6 +43,23 @@ export default function StudioInspector({
   const { section, id } = selection;
   const [newName, setNewName] = useState('');
   const [resizeAttempt, setResizeAttempt] = useState(0);
+  if (selection.members && targets(selection).length > 1) {
+    return (
+      <>
+        <h2>{targets(selection).length} selected</h2>
+        <SelectionControls
+          source={source}
+          selection={selection}
+          report={report}
+          edit={edit}
+        />
+        <p>
+          Ctrl/Cmd toggles items. Shift selects a range. Drag any selected item
+          to move the set.
+        </p>
+      </>
+    );
+  }
   const objectSection = section === 'objects' || section === 'clusters';
   const item = objectSection ? data.layout[section]?.[id] : undefined;
   const resolved = objectSection ? report?.[section]?.[id] : undefined;
@@ -92,7 +110,13 @@ export default function StudioInspector({
         if (!Array.isArray(value)) {
           size[Number(field[3])] = value as number | string;
         }
-        return resizeKey(before, id, size, report);
+        return sizeSelection(
+          before,
+          { section: 'objects', id },
+          size,
+          undefined,
+          report
+        );
       }
       const last = field.at(-1);
       if (
@@ -529,15 +553,12 @@ export default function StudioInspector({
   return (
     <>
       <h2>{item.label || id}</h2>
-      <details>
-        <summary>Size, alignment and relative adjustments</summary>
-        <SelectionControls
-          source={source}
-          selection={selection}
-          report={report}
-          edit={edit}
-        />
-      </details>
+      <SelectionControls
+        source={source}
+        selection={selection}
+        report={report}
+        edit={edit}
+      />
       {field('Label', ['label'], id, { text: true })}
       <small>
         {item.kind ||

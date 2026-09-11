@@ -1,5 +1,56 @@
 # Changelog
 
+## Clear canvas and key resizing
+
+September 11, 2026
+
+Open **Inspector** beside the canvas tools for Objects, Selection and Design.
+Both sidebars and automatic selection popups are replaced by this manually opened
+panel. Sections remember their expanded state during the session.
+
+**Auto (make room)** grows outside keys outward. Interior resizing adjusts native
+spacing in one undoable edit, preserving authored offsets. Unresolved clearance
+is reported and blocks fabrication exports.
+
+## A simpler design workflow
+
+September 11, 2026
+
+![Design, PCB, Case and Export in one workspace.](./public/images/changelog/studio-workflow.png)
+
+Layout and component placement now share **Design**. Continue through **PCB**,
+**Case** and **Export** without losing generated geometry when opening Code or
+the part library.
+
+**What changed:**
+
+- **One generation action:** Generate 3D and the editor shortcut share a build.
+- **One export destination:** Download source, portable projects, boards and case
+  files from Export. Case review resets when geometry changes.
+- **Settings stays in context:** Keep the current stage, selection and camera.
+  Advanced library code appears when an entry is selected.
+- **Explicit case creation:** Opening Case leaves the source and undo history
+  untouched until you choose Create case.
+- **Reliable editing:** Unfinished YAML keeps its editor, and legacy automatic
+  generation no longer starts extra native builds.
+
+## Direct layout editing
+
+September 10, 2026
+
+The canvas now has a floating tool pill with Objects, Columns and Matrices at the
+top. Selection opens the relevant quick controls; owned electronics fold beneath
+keys in a smaller tree.
+
+Drag components directly, use Ctrl/Cmd to toggle selections and Shift to select a
+range. Snapping preserves layout spacing and checks nearby envelopes. Components
+can keep a snapped target and offset. Drops retain their visible position while
+validation finishes, without refitting the camera.
+
+Delete removes the selection as one undoable edit, including owned components.
+Locks and external references remain protected; text fields retain normal Delete
+behavior. Phone controls fit the screen and quick edits stay above the zoom pill.
+
 ## Reliable setup and assembly edits
 
 September 10, 2026

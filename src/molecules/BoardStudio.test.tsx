@@ -1,15 +1,28 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import { useState } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 import { parse } from 'yaml';
 import { compileSetup, defaultSetup } from '../utils/designSetup';
 import { setValue } from '../utils/studioSource';
 import BoardStudio from './BoardStudio';
-import { useLayoutAnalysis, useCaseAnalysis } from '../hooks/useCasePreview';
+import {
+  useLayoutAnalysis,
+  useCaseAnalysis,
+  useCasePreview,
+} from '../hooks/useCasePreview';
 
 let current = '';
 const hooks = vi.hoisted(() => ({ useConfigContext: vi.fn() }));
 vi.mock('../context/ConfigContext', () => hooks);
 vi.mock('../hooks/useCasePreview', () => ({
+  useCasePreview: vi.fn(() => ({
+    result: null,
+    stale: true,
+    pending: false,
+    error: '',
+    diagnostics: [],
+    generate: vi.fn(),
+    cancel: vi.fn(),
+  })),
   useLayoutAnalysis: vi.fn(() => ({
     result: null,
     stale: true,
@@ -28,11 +41,19 @@ vi.mock('./StudioCanvas', () => ({
   default: ({
     stale,
     report,
+    inspector,
+    onSelect,
   }: {
     stale: boolean;
+    inspector: ReactNode;
+    onSelect: (value: { section: 'objects'; id: string }) => void;
     report?: { objects: Record<string, unknown> };
   }) => (
     <div aria-label="Layout canvas" data-stale={String(stale)}>
+      {inspector}
+      <button onClick={() => onSelect({ section: 'objects', id: 'a' })}>
+        Select canvas key
+      </button>
       {Object.keys(report?.objects || {}).join(',')}
     </div>
   ),
@@ -65,8 +86,16 @@ function Harness({ initial }: { initial?: string }) {
   });
   return <BoardStudio />;
 }
+function renderOpen(ui: ReactElement) {
+  const result = render(ui);
+  fireEvent.click(screen.getByRole('button', { name: 'Inspector' }));
+  for (const name of ['Objects', 'Selection', 'Design']) {
+    fireEvent.click(screen.getByText(name, { selector: 'summary' }));
+  }
+  return result;
+}
 it('creates and edits a parametric thumb cluster without opening Code', async () => {
-  render(<Harness />);
+  renderOpen(<Harness />);
   fireEvent.click(screen.getByRole('button', { name: 'Add' }));
   fireEvent.change(screen.getByLabelText('New item kind'), {
     target: { value: 'arc' },
@@ -88,7 +117,7 @@ it('creates and edits a parametric thumb cluster without opening Code', async ()
   expect(screen.queryByText('Code editor')).not.toBeInTheDocument();
 });
 it('keeps workflow destinations and code accessible', () => {
-  render(<Harness />);
+  renderOpen(<Harness />);
   fireEvent.click(screen.getByRole('button', { name: 'Case' }));
   expect(screen.getByText('Case tools')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Code' }));
@@ -97,10 +126,39 @@ it('keeps workflow destinations and code accessible', () => {
   expect(screen.getByRole('button', { name: 'Download YAML' })).toBeEnabled();
   expect(
     screen.getByRole('button', { name: 'Download PCB and outlines ZIP' })
-  ).toBeEnabled();
+  ).toBeDisabled();
+});
+
+it('uses the same generation controller across case and export navigation', () => {
+  const generate = vi.fn();
+  vi.mocked(useCasePreview).mockReturnValue({
+    result: null,
+    stale: true,
+    pending: false,
+    error: '',
+    diagnostics: [],
+    generate,
+    cancel: vi.fn(),
+  });
+  vi.mocked(useLayoutAnalysis).mockReturnValue({
+    result: null,
+    stale: false,
+    pending: false,
+    error: '',
+    diagnostics: [],
+    generate: vi.fn(),
+    cancel: vi.fn(),
+  });
+  renderOpen(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+  expect(generate).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'Case' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+  expect(generate).toHaveBeenCalledTimes(2);
 });
 it('creates a 5 by 4 matrix and edits a whole column and its individual cells', () => {
-  render(<Harness />);
+  renderOpen(<Harness />);
   fireEvent.click(screen.getByRole('button', { name: 'Add' }));
   fireEvent.change(screen.getByLabelText('New item name'), {
     target: { value: 'matrix' },
@@ -121,7 +179,7 @@ it('creates a 5 by 4 matrix and edits a whole column and its individual cells', 
   expect(parse(current).layout.objects.matrix_c2_r1.properties).toBeUndefined();
 });
 it('shows authored cluster counts even before outline analysis succeeds', () => {
-  render(<Harness />);
+  renderOpen(<Harness />);
   fireEvent.click(screen.getByRole('button', { name: 'Add' }));
   fireEvent.change(screen.getByLabelText('New item name'), {
     target: { value: 'thumbs' },
@@ -133,7 +191,7 @@ it('shows authored cluster counts even before outline analysis succeeds', () => 
   expect(screen.getByRole('button', { name: 'thumbs 3 keys' })).toBeVisible();
 });
 it('keeps an empty free cluster selectable and deletable', () => {
-  render(<Harness />);
+  renderOpen(<Harness />);
   fireEvent.click(screen.getByRole('button', { name: 'Add' }));
   fireEvent.change(screen.getByLabelText('New item name'), {
     target: { value: 'free' },
@@ -190,7 +248,7 @@ it('keeps board exports stale when only layout resolution succeeds', () => {
     error: 'Disconnected outline',
     diagnostics: [],
   } as unknown as ReturnType<typeof useCaseAnalysis>);
-  render(<Harness />);
+  renderOpen(<Harness />);
   fireEvent.click(screen.getByRole('button', { name: 'Export' }));
   expect(
     screen.getByRole('button', { name: 'Download PCB and outlines ZIP' })
@@ -198,7 +256,7 @@ it('keeps board exports stale when only layout resolution succeeds', () => {
 });
 
 it('opens the case from the footprint library preview action', async () => {
-  render(<Harness />);
+  renderOpen(<Harness />);
   fireEvent.click(screen.getByRole('button', { name: 'Part library' }));
   fireEvent.click(
     await screen.findByRole('button', { name: 'Preview in case' })
@@ -212,7 +270,7 @@ it('reviews an edited column removal and preserves the source on Cancel', () => 
     ['layout', 'objects', 'fingers_c2_r1', 'placement'],
     { override: { at: [2, 0, 0] } }
   );
-  render(<Harness initial={source} />);
+  renderOpen(<Harness initial={source} />);
   fireEvent.click(screen.getByRole('button', { name: 'fingers 2 keys' }));
   fireEvent.blur(screen.getByLabelText('Matrix columns'), {
     target: { value: '1' },
@@ -236,4 +294,141 @@ it('reviews an edited column removal and preserves the source on Cancel', () => 
   expect(parse(current).layout.clusters.fingers.arrangement.columns).toEqual([
     'c1',
   ]);
+});
+
+it('deletes the selected column but leaves Delete in text fields alone', () => {
+  vi.mocked(useLayoutAnalysis).mockReturnValue({
+    result: { layout: { objects: {}, clusters: {}, findings: [] } },
+    pending: false,
+    stale: false,
+    error: '',
+    diagnostics: [],
+  } as unknown as ReturnType<typeof useLayoutAnalysis>);
+  renderOpen(
+    <Harness
+      initial={
+        'schema: ergogen/v1\nlayout: {clusters: {main: {arrangement: {type: columns, columns: [c1,c2], rows: [r1]}}}, objects: {a: {kind: key, cluster: main, cell: [c1,r1]}, b: {kind: key, cluster: main, cell: [c2,r1]}}}'
+      }
+    />
+  );
+  fireEvent.click(screen.getAllByRole('button', { name: 'Column 1 · c1' })[0]);
+  const before = current;
+  fireEvent.keyDown(screen.getByLabelText('Column splay'), { key: 'Delete' });
+  expect(current).toBe(before);
+  fireEvent.keyDown(screen.getByRole('region', { name: 'Board Studio' }), {
+    key: 'Delete',
+  });
+  expect(Object.keys(parse(current).layout.objects)).toEqual(['b']);
+  expect(parse(current).layout.clusters.main.arrangement.columns).toEqual([
+    'c2',
+  ]);
+});
+
+it('keeps cancellation available while Case is generating', () => {
+  const cancel = vi.fn();
+  vi.mocked(useCasePreview).mockReturnValue({
+    result: null,
+    stale: true,
+    pending: true,
+    error: '',
+    diagnostics: [],
+    generate: vi.fn(),
+    cancel,
+  });
+  renderOpen(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Case' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel generation' }));
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+it('retries failed board analysis from Export', () => {
+  const generate = vi.fn();
+  vi.mocked(useCaseAnalysis).mockReturnValue({
+    result: null,
+    stale: true,
+    pending: false,
+    error: 'Worker stopped',
+    diagnostics: [],
+    generate,
+    cancel: vi.fn(),
+  });
+  vi.mocked(useCasePreview).mockReturnValue({
+    result: null,
+    stale: true,
+    pending: false,
+    error: '',
+    diagnostics: [],
+    generate: vi.fn(),
+    cancel: vi.fn(),
+  });
+  renderOpen(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Retry board analysis' }));
+  expect(generate).toHaveBeenCalledOnce();
+});
+
+it('returns to the part library after closing Code', async () => {
+  renderOpen(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Part library' }));
+  expect(
+    await screen.findByRole('button', { name: 'Preview in case' })
+  ).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+  expect(screen.getByText('Code editor')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+  expect(
+    await screen.findByRole('button', { name: 'Preview in case' })
+  ).toBeVisible();
+});
+
+it('opens case creation from Export when the project has no assembly', () => {
+  renderOpen(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Review case and manufacturing' })
+  );
+  expect(screen.getByText('Case tools')).toBeVisible();
+});
+
+it('starts with the shared inspector closed', () => {
+  render(<Harness />);
+  expect(screen.getByRole('button', { name: 'Inspector' })).toHaveAttribute(
+    'aria-expanded',
+    'false'
+  );
+  expect(
+    screen.queryByRole('complementary', { name: 'Design inspector' })
+  ).not.toBeInTheDocument();
+});
+
+it('keeps selection changes from opening the inspector and restores focus on close', () => {
+  render(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Select canvas key' }));
+  const trigger = screen.getByRole('button', { name: 'Inspector' });
+  expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  fireEvent.click(trigger);
+  const objects = screen.getByText('Objects', { selector: 'summary' });
+  fireEvent.click(objects);
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Close inspector' }), {
+    key: 'Escape',
+  });
+  expect(trigger).toHaveFocus();
+  fireEvent.click(trigger);
+  expect(objects.parentElement).toHaveAttribute('open');
+  expect(
+    screen.getByText('Selection', { selector: 'summary' }).parentElement
+  ).not.toHaveAttribute('open');
+});
+
+it('renders one set of selection controls in the shared inspector', () => {
+  renderOpen(
+    <Harness
+      initial={'schema: ergogen/v1\nlayout: {objects: {a: {kind: key}}}\n'}
+    />
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Select canvas key' }));
+  expect(
+    screen.getAllByLabelText('Selection key size', { exact: true })
+  ).toHaveLength(1);
 });
